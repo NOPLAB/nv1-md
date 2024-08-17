@@ -61,6 +61,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "baf1de4339761588bc0619e3cbc0120ee582ebb74b53b4efbf79117bd2da40fd"
 
 [[package]]
+name = "corncobs"
+version = "0.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f9236877021b66ad90f833d8a73a7acb702b985b64c5986682d9f1f1a184f0fb"
+
+[[package]]
 name = "cortex-m"
 version = "0.7.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -579,6 +585,7 @@ dependencies = [
 name = "nv1-md"
 version = "0.1.0"
 dependencies = [
+ "corncobs",
  "cortex-m",
  "cortex-m-rt",
  "defmt",
@@ -588,6 +595,7 @@ dependencies = [
  "embassy-stm32",
  "embassy-sync 0.6.0",
  "embassy-time",
+ "heapless",
  "panic-halt",
  "panic-probe",
 ]

@@ -4,7 +4,8 @@
 mod fmt;
 mod motor;
 
-use motor::{MotorGroup, MotorGroupComplementary, MotorGroupSimple, Motors};
+use embassy_time::Timer;
+use motor::{MotorGroupComplementary, MotorGroupSimple, Motors};
 
 #[cfg(not(feature = "defmt"))]
 use panic_halt as _;
@@ -12,39 +13,48 @@ use panic_halt as _;
 use {defmt_rtt as _, panic_probe as _};
 
 use embassy_executor::Spawner;
+use embassy_stm32::timer::low_level::GeneralPurpose32bitInstance;
 use embassy_stm32::{
     bind_interrupts,
-    gpio::{Level, Output, OutputType, Speed},
+    gpio::{low_level::Pin, OutputType},
+    pac::{self, timer::vals::Sms},
     time::khz,
     timer::{
         complementary_pwm::{ComplementaryPwm, ComplementaryPwmPin},
         simple_pwm::{PwmPin, SimplePwm},
         Channel,
     },
+    usart::Uart,
 };
+use embassy_stm32::{pac::timer::vals::CcmrInputCcs, rcc::low_level::RccPeripheral};
 use embassy_stm32::{
     peripherals,
-    usart::{self, Config, Uart},
+    usart::{self, Config},
 };
-use embassy_time::{Duration, Timer};
 use fmt::info;
-use fmt::unwrap;
 
 bind_interrupts!(struct Irqs {
     USART3 => usart::InterruptHandler<peripherals::USART3>;
 });
 
-#[embassy_executor::main]
-async fn main(_spawner: Spawner) {
-    let p = embassy_stm32::init(Default::default());
-    let mut led = Output::new(p.PB7, Level::High, Speed::Low);
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+struct MotorSpeed {
+    motor1: f32,
+    motor2: f32,
+    motor3: f32,
+    motor4: f32,
+}
 
-    let mut config = Config::default();
-    config.baudrate = 250000;
-    let mut usart = Uart::new(
-        p.USART3, p.PC5, p.PB10, Irqs, p.DMA1_CH3, p.DMA1_CH1, config,
-    )
-    .unwrap();
+#[repr(C)]
+union MotorSpeedData {
+    motor_speed: MotorSpeed,
+    buffer: [u8; 16],
+}
+
+#[embassy_executor::main]
+async fn main(spawner: Spawner) {
+    let p = embassy_stm32::init(Default::default());
 
     let pwm1_ch1 = PwmPin::new_ch1(p.PA8, OutputType::PushPull);
     let pwm1_ch4 = PwmPin::new_ch4(p.PA11, OutputType::PushPull);
@@ -75,8 +85,8 @@ async fn main(_spawner: Spawner) {
         pwm1,
         Channel::Ch1,
         Channel::Ch4,
-        Channel::Ch2,
         Channel::Ch3,
+        Channel::Ch2,
         128,
     );
 
@@ -111,18 +121,114 @@ async fn main(_spawner: Spawner) {
 
     let mut motors = Motors::new(motor_group1, motor_group2);
 
+    let mut config = Config::default();
+    config.baudrate = 115200;
+    let usart = Uart::new(
+        p.USART3, p.PC5, p.PB10, Irqs, p.DMA1_CH3, p.DMA1_CH1, config,
+    )
+    .unwrap();
+
+    spawner.must_spawn(uart_task(usart));
+
+    // encoder mode tim5 motor1
+
+    // initialize gpio
+    pac::RCC.ahb1enr().modify(|r| r.set_gpioaen(true));
+    p.PA0
+        .block()
+        .moder()
+        .modify(|r| r.set_moder(0, pac::gpio::vals::Moder::ALTERNATE));
+    p.PA0.block().afr(0).modify(|r| r.set_afr(0, 2));
+    p.PA1
+        .block()
+        .moder()
+        .modify(|r| r.set_moder(1, pac::gpio::vals::Moder::ALTERNATE));
+    p.PA1.block().afr(0).modify(|r| r.set_afr(1, 2));
+
+    // initialize tim
+    peripherals::TIM5::enable_and_reset();
+
+    let tim5 = peripherals::TIM5::regs_gp32();
+
+    tim5.psc().write(|w| w.set_psc(0));
+    tim5.arr().write(|w| w.set_arr(0xFF));
+    tim5.cnt().write(|w| w.set_cnt(128));
+    tim5.ccmr_input(0)
+        .modify(|w| w.set_ccs(0, CcmrInputCcs::from_bits(0b01)));
+    tim5.ccmr_input(0)
+        .modify(|w| w.set_ccs(1, CcmrInputCcs::from_bits(0b01)));
+    tim5.ccer().modify(|w| {
+        w.0 &= !(0x1 << 1) | !(0x1 << 5);
+    });
+    tim5.smcr().modify(|w| w.set_sms(Sms::ENCODER_MODE_3));
+    tim5.cr1().modify(|r| r.set_cen(true));
+
     loop {
-        info!("Hello, World!");
-        led.set_high();
-        Timer::after(Duration::from_millis(500)).await;
-        led.set_low();
-        Timer::after(Duration::from_millis(500)).await;
+        let speed = 0;
+        motors.set_speed1(speed);
+        motors.set_speed2(speed);
+        motors.set_speed3(speed);
+        motors.set_speed4(speed);
 
-        motors.set_speed1(128);
-        motors.set_speed2(64);
-        motors.set_speed3(128);
-        motors.set_speed4(64);
+        Timer::after_millis(10).await;
 
-        unwrap!(usart.write("Hello DMA!".as_bytes()).await);
+        info!("{}", tim5.cnt().read().cnt());
+    }
+}
+
+#[embassy_executor::task]
+async fn uart_task(
+    mut usart: Uart<'static, peripherals::USART3, peripherals::DMA1_CH3, peripherals::DMA1_CH1>,
+) {
+    // read until 0
+    let mut buffer = [0; 1];
+    loop {
+        usart.read(&mut buffer).await.unwrap();
+        if buffer[0] == 0 {
+            break;
+        }
+    }
+
+    loop {
+        const DECODE_DATA_SIZE: usize = 16;
+        const RECEIVE_DATA_SIZE: usize = DECODE_DATA_SIZE + 2;
+
+        let mut buffer = [0; RECEIVE_DATA_SIZE];
+        usart.read(&mut buffer).await.unwrap();
+
+        // info!("Data: {:?}", stack);
+
+        let mut decoded_buf = [0; 32];
+        match corncobs::decode_buf(&buffer, &mut decoded_buf) {
+            Ok(size) => {
+                if size != DECODE_DATA_SIZE {
+                    info!("Invalid data size: {}", size);
+                    continue;
+                }
+
+                let motor_speed_data = MotorSpeedData {
+                    buffer: decoded_buf[0..DECODE_DATA_SIZE].try_into().unwrap(),
+                };
+
+                let motor_speed = unsafe { motor_speed_data.motor_speed };
+            }
+            Err(err) => {
+                info!("Failed to decode data");
+                info!("Data: {:?}", buffer);
+                match err {
+                    corncobs::CobsError::Truncated => info!("Truncated"),
+                    corncobs::CobsError::Corrupt => info!("Corrupt"),
+                }
+
+                // read until 0
+                let mut buffer = [0; 1];
+                loop {
+                    usart.read(&mut buffer).await.unwrap();
+                    if buffer[0] == 0 {
+                        break;
+                    }
+                }
+            }
+        }
     }
 }
