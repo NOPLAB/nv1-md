@@ -1,22 +1,21 @@
 #![no_std]
 #![no_main]
 
-mod fmt;
-mod motor;
-
-use core::cell::RefCell;
-
-use embassy_sync::blocking_mutex::{raw::ThreadModeRawMutex, Mutex};
-use embassy_time::Timer;
-use motor::{MotorGroupComplementary, MotorGroupSimple, Motors};
-
 #[cfg(not(feature = "defmt"))]
 use panic_halt as _;
+
 #[cfg(feature = "defmt")]
 use {defmt_rtt as _, panic_probe as _};
 
+mod fmt;
+mod motor;
+mod music;
+
+use core::cell::RefCell;
+
+use motor::{MotorGroupComplementary, MotorGroupSimple, Motors};
+
 use embassy_executor::Spawner;
-use embassy_stm32::timer::low_level::{GeneralPurpose16bitInstance, GeneralPurpose32bitInstance};
 use embassy_stm32::{
     bind_interrupts,
     gpio::{low_level::Pin, OutputType},
@@ -34,11 +33,23 @@ use embassy_stm32::{
     peripherals,
     usart::{self, Config},
 };
+use embassy_stm32::{
+    time::hz,
+    timer::low_level::{GeneralPurpose16bitInstance, GeneralPurpose32bitInstance},
+};
+use embassy_sync::blocking_mutex::{raw::ThreadModeRawMutex, Mutex};
+use embassy_time::Timer;
+
 use fmt::info;
+
+use pid::Pid;
 
 bind_interrupts!(struct Irqs {
     USART3 => usart::InterruptHandler<peripherals::USART3>;
 });
+
+const MOTOR_ENCODER_PLUS: usize = 3 * 4;
+const MOTOR_GEAR_RATIO: f32 = 1.0 / 19.225;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -50,6 +61,7 @@ struct MotorSpeed {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy)]
 union MotorSpeedData {
     motor_speed: MotorSpeed,
     buffer: [u8; 16],
@@ -94,10 +106,10 @@ async fn main(spawner: Spawner) {
 
     let motor_group1 = MotorGroupComplementary::new(
         pwm1,
-        Channel::Ch1,
         Channel::Ch4,
-        Channel::Ch3,
+        Channel::Ch1,
         Channel::Ch2,
+        Channel::Ch3,
         128,
     );
 
@@ -123,10 +135,10 @@ async fn main(spawner: Spawner) {
 
     let motor_group2 = MotorGroupSimple::new(
         pwm8,
-        Channel::Ch1,
         Channel::Ch2,
-        Channel::Ch3,
+        Channel::Ch1,
         Channel::Ch4,
+        Channel::Ch3,
         128,
     );
 
@@ -280,22 +292,114 @@ async fn main(spawner: Spawner) {
     tim2.smcr().modify(|w| w.set_sms(Sms::ENCODER_MODE_3));
     tim2.cr1().modify(|r| r.set_cen(true));
 
+    let read_encoder1 = || {
+        let tmp = (tim5.cnt().read().cnt() as i16 - ENCODER_TIM_HALF_VALUE as i16) as f32;
+        tim5.cnt()
+            .write(|w| w.set_cnt(ENCODER_TIM_HALF_VALUE as u32));
+        return tmp;
+    };
+    let read_encoder2 = || {
+        let tmp = (tim3.cnt().read().cnt() as i16 - ENCODER_TIM_HALF_VALUE as i16) as f32;
+        tim3.cnt()
+            .write(|w| w.set_cnt(ENCODER_TIM_HALF_VALUE as u16));
+        return tmp;
+    };
+    let read_encoder3 = || {
+        let tmp = (tim4.cnt().read().cnt() as i16 - ENCODER_TIM_HALF_VALUE as i16) as f32;
+        tim4.cnt()
+            .write(|w| w.set_cnt(ENCODER_TIM_HALF_VALUE as u16));
+        return tmp;
+    };
+    let read_encoder4 = || {
+        let tmp = -(tim2.cnt().read().cnt() as i16 - ENCODER_TIM_HALF_VALUE as i16) as f32;
+        tim2.cnt()
+            .write(|w| w.set_cnt(ENCODER_TIM_HALF_VALUE as u32));
+        return tmp;
+    };
+
+    let mut pid1: Pid<f32> = pid::Pid::new(10.0, 100.0);
+    let mut pid2: Pid<f32> = pid::Pid::new(0.0, 100.0);
+    let mut pid3: Pid<f32> = pid::Pid::new(0.0, 100.0);
+    let mut pid4: Pid<f32> = pid::Pid::new(0.0, 100.0);
+
+    pid1.p(5.0, 100.0).i(3.0, 100.0).d(0.0, 0.0);
+    pid2.p(5.0, 100.0).i(3.0, 100.0).d(0.0, 0.0);
+    pid3.p(5.0, 100.0).i(3.0, 100.0).d(0.0, 0.0);
+    pid4.p(5.0, 100.0).i(3.0, 100.0).d(0.0, 0.0);
+
+    let music = music::MUSIC_DOREMI;
+    let mut play_time: u32 = 0;
+    let mut next_music: u32 = music::MUSIC_DOREMI[0].1;
+    let mut music_index: usize = 0;
+
     loop {
-        let speed = 0;
-        motors.set_speed1(speed);
-        motors.set_speed2(speed);
-        motors.set_speed3(speed);
-        motors.set_speed4(speed);
+        let motor_target = G_MOTOR_SPEED.lock(|f| f.borrow().clone());
+
+        // pid1.setpoint(1.0);
+        // pid2.setpoint(1.0);
+        // pid3.setpoint(1.0);
+        // pid4.setpoint(1.0);
+
+        if !motor_target.motor1.is_nan()
+            && !motor_target.motor2.is_nan()
+            && !motor_target.motor3.is_nan()
+            && !motor_target.motor4.is_nan()
+        {
+            pid1.setpoint(motor_target.motor1);
+            pid2.setpoint(motor_target.motor2);
+            pid3.setpoint(motor_target.motor3);
+            pid4.setpoint(motor_target.motor4);
+        }
+
+        let motor1_rps = read_encoder1() / MOTOR_ENCODER_PLUS as f32 * MOTOR_GEAR_RATIO / 0.01;
+        let motor2_rps = read_encoder2() / MOTOR_ENCODER_PLUS as f32 * MOTOR_GEAR_RATIO / 0.01;
+        let motor3_rps = read_encoder3() / MOTOR_ENCODER_PLUS as f32 * MOTOR_GEAR_RATIO / 0.01;
+        let motor4_rps = read_encoder4() / MOTOR_ENCODER_PLUS as f32 * MOTOR_GEAR_RATIO / 0.01;
+
+        if motor1_rps.is_nan() {
+            continue;
+        }
+
+        let motor1_output = pid1.next_control_output(motor1_rps);
+        let motor2_output = pid2.next_control_output(motor2_rps);
+        let motor3_output = pid3.next_control_output(motor3_rps);
+        let motor4_output = pid4.next_control_output(motor4_rps);
+
+        motors.set_speed1(motor1_output.output as i16);
+        motors.set_speed2(motor2_output.output as i16);
+        motors.set_speed3(motor3_output.output as i16);
+        motors.set_speed4(motor4_output.output as i16);
+
+        // info!(
+        //     "rps: {}, {}, {}, {}",
+        //     motor1_rps, motor2_rps, motor3_rps, motor4_rps
+        // );
+
+        // info!(
+        //     "output: {}, {}, {}",
+        //     motor1_output.p, motor1_output.i, motor1_output.d
+        // );
+
+        // info!(
+        //     "{}, {}, {}, {}",
+        //     tim5.cnt().read().cnt(),
+        //     tim3.cnt().read().cnt(),
+        //     tim4.cnt().read().cnt(),
+        //     tim2.cnt().read().cnt()
+        // );
 
         Timer::after_millis(10).await;
 
-        info!(
-            "{}, {}, {}, {}",
-            tim5.cnt().read().cnt(),
-            tim3.cnt().read().cnt(),
-            tim4.cnt().read().cnt(),
-            tim2.cnt().read().cnt()
-        );
+        play_time += 10;
+        if play_time > next_music {
+            play_time = 0;
+            music_index += 1;
+            if music_index >= music::MUSIC_DOREMI.len() {
+                music_index = 0;
+            }
+            next_music = music::MUSIC_DOREMI[music_index].1;
+            motors.set_frequency(music[music_index].0);
+        }
     }
 }
 
@@ -312,46 +416,62 @@ async fn uart_task(
         }
     }
 
+    const DECODE_DATA_SIZE: usize = 16;
+    const RECEIVE_DATA_SIZE: usize = DECODE_DATA_SIZE + 2;
+    let mut buffer = [0; RECEIVE_DATA_SIZE];
+
     loop {
-        const DECODE_DATA_SIZE: usize = 16;
-        const RECEIVE_DATA_SIZE: usize = DECODE_DATA_SIZE + 2;
+        match usart.read(&mut buffer).await {
+            Ok(_) => {
+                let mut decoded_buf = [0; 32];
+                match corncobs::decode_buf(&buffer, &mut decoded_buf) {
+                    Ok(size) => {
+                        if size != DECODE_DATA_SIZE {
+                            info!("Invalid data size: {}", size);
+                            continue;
+                        }
 
-        let mut buffer = [0; RECEIVE_DATA_SIZE];
-        usart.read(&mut buffer).await.unwrap();
+                        let motor_speed_data = MotorSpeedData {
+                            buffer: decoded_buf[0..DECODE_DATA_SIZE].try_into().unwrap(),
+                        };
 
-        // info!("Data: {:?}", stack);
+                        // unsafe {
+                        //     info!("Motor speed: {}", motor_speed_data.motor_speed.motor1);
+                        // }
 
-        let mut decoded_buf = [0; 32];
-        match corncobs::decode_buf(&buffer, &mut decoded_buf) {
-            Ok(size) => {
-                if size != DECODE_DATA_SIZE {
-                    info!("Invalid data size: {}", size);
-                    continue;
-                }
+                        G_MOTOR_SPEED.lock(|f| f.replace(unsafe { motor_speed_data.motor_speed }));
+                    }
+                    Err(err) => {
+                        info!("Failed to decode data");
+                        info!("Data: {:?}", buffer);
+                        match err {
+                            corncobs::CobsError::Truncated => info!("Truncated"),
+                            corncobs::CobsError::Corrupt => info!("Corrupt"),
+                        }
 
-                let motor_speed_data = MotorSpeedData {
-                    buffer: decoded_buf[0..DECODE_DATA_SIZE].try_into().unwrap(),
-                };
-
-                G_MOTOR_SPEED.lock(|f| f.replace(unsafe { motor_speed_data.motor_speed }));
-            }
-            Err(err) => {
-                info!("Failed to decode data");
-                info!("Data: {:?}", buffer);
-                match err {
-                    corncobs::CobsError::Truncated => info!("Truncated"),
-                    corncobs::CobsError::Corrupt => info!("Corrupt"),
-                }
-
-                // read until 0
-                let mut buffer = [0; 1];
-                loop {
-                    usart.read(&mut buffer).await.unwrap();
-                    if buffer[0] == 0 {
-                        break;
+                        // read until 0
+                        let mut buffer = [0; 1];
+                        loop {
+                            usart.read(&mut buffer).await.unwrap();
+                            if buffer[0] == 0 {
+                                break;
+                            }
+                        }
                     }
                 }
             }
-        }
+            Err(err) => {
+                if err == usart::Error::Overrun {
+                    info!("Overrun");
+                    continue;
+                } else {
+                    info!("Failed to read data");
+                    info!("Error: {:?}", err);
+                    continue;
+                }
+            }
+        };
+
+        // info!("Data: {:?}", stack);
     }
 }

@@ -34,6 +34,7 @@ embassy-time = { version = "0.3.2", features = ["tick-hz-32_768"] }
 heapless = "0.8.0"
 panic-halt = "0.2.0"
 panic-probe = { version = "0.3.2", features = ["print-defmt"], optional = true }
+pid = "4.0.0"
 
 [[bin]]
 name = "nv1-md"

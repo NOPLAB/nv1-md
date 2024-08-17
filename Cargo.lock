@@ -598,6 +598,7 @@ dependencies = [
  "heapless",
  "panic-halt",
  "panic-probe",
+ "pid",
 ]
 
 [[package]]
@@ -614,6 +615,15 @@ checksum = "4047d9235d1423d66cc97da7d07eddb54d4f154d6c13805c6d0793956f4f25b0"
 dependencies = [
  "cortex-m",
  "defmt",
+]
+
+[[package]]
+name = "pid"
+version = "4.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d7c931ef9756cd5e3fa3d395bfe09df4dfa6f0612c6ca8f6b12927d17ca34e36"
+dependencies = [
+ "num-traits",
 ]
 
 [[package]]

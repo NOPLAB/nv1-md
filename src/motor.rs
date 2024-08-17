@@ -1,6 +1,9 @@
-use embassy_stm32::timer::{
-    complementary_pwm::ComplementaryPwm, simple_pwm::SimplePwm, CaptureCompare16bitInstance,
-    Channel, ComplementaryCaptureCompare16bitInstance,
+use embassy_stm32::{
+    time::Hertz,
+    timer::{
+        complementary_pwm::ComplementaryPwm, simple_pwm::SimplePwm, CaptureCompare16bitInstance,
+        Channel, ComplementaryCaptureCompare16bitInstance,
+    },
 };
 
 pub trait MotorGroup {
@@ -8,6 +11,7 @@ pub trait MotorGroup {
     fn stop1(&mut self);
     fn set_speed2(&mut self, speed: i16);
     fn stop2(&mut self);
+    fn set_frequency(&mut self, frequency: Hertz);
 }
 
 pub struct Motor {
@@ -91,6 +95,10 @@ where
         self.pwm.set_duty(self.motor2.ch_a, 0);
         self.pwm.set_duty(self.motor2.ch_b, 0);
     }
+
+    fn set_frequency(&mut self, frequency: Hertz) {
+        self.pwm.set_frequency(frequency);
+    }
 }
 
 pub struct MotorGroupSimple<'a, TIM>
@@ -169,6 +177,10 @@ where
         self.pwm.set_duty(self.motor2.ch_a, 0);
         self.pwm.set_duty(self.motor2.ch_b, 0);
     }
+
+    fn set_frequency(&mut self, frequency: Hertz) {
+        self.pwm.set_frequency(frequency);
+    }
 }
 
 pub struct Motors<G1, G2>
@@ -219,5 +231,10 @@ where
 
     pub fn stop4(&mut self) {
         self.group2.stop2();
+    }
+
+    pub fn set_frequency(&mut self, frequency: Hertz) {
+        self.group1.set_frequency(frequency);
+        self.group2.set_frequency(frequency);
     }
 }

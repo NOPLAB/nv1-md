@@ -9,6 +9,7 @@
         "Irqs",
         "moder",
         "regs",
+        "setpoint",
         "smcr",
         "USART",
         "vals"
