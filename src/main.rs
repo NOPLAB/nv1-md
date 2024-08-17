@@ -4,6 +4,9 @@
 mod fmt;
 mod motor;
 
+use core::cell::RefCell;
+
+use embassy_sync::blocking_mutex::{raw::ThreadModeRawMutex, Mutex};
 use embassy_time::Timer;
 use motor::{MotorGroupComplementary, MotorGroupSimple, Motors};
 
@@ -51,6 +54,14 @@ union MotorSpeedData {
     motor_speed: MotorSpeed,
     buffer: [u8; 16],
 }
+
+static G_MOTOR_SPEED: Mutex<ThreadModeRawMutex, RefCell<MotorSpeed>> =
+    Mutex::new(RefCell::new(MotorSpeed {
+        motor1: 0.0,
+        motor2: 0.0,
+        motor3: 0.0,
+        motor4: 0.0,
+    }));
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
@@ -322,7 +333,7 @@ async fn uart_task(
                     buffer: decoded_buf[0..DECODE_DATA_SIZE].try_into().unwrap(),
                 };
 
-                let motor_speed = unsafe { motor_speed_data.motor_speed };
+                G_MOTOR_SPEED.lock(|f| f.replace(unsafe { motor_speed_data.motor_speed }));
             }
             Err(err) => {
                 info!("Failed to decode data");
