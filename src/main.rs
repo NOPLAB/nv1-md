@@ -13,7 +13,7 @@ use panic_halt as _;
 use {defmt_rtt as _, panic_probe as _};
 
 use embassy_executor::Spawner;
-use embassy_stm32::timer::low_level::GeneralPurpose32bitInstance;
+use embassy_stm32::timer::low_level::{GeneralPurpose16bitInstance, GeneralPurpose32bitInstance};
 use embassy_stm32::{
     bind_interrupts,
     gpio::{low_level::Pin, OutputType},
@@ -130,10 +130,16 @@ async fn main(spawner: Spawner) {
 
     spawner.must_spawn(uart_task(usart));
 
-    // encoder mode tim5 motor1
+    const ENCODER_TIM_MAX_VALUE: u16 = 0xFF;
+    const ENCODER_TIM_HALF_VALUE: u16 = ENCODER_TIM_MAX_VALUE / 2;
 
     // initialize gpio
     pac::RCC.ahb1enr().modify(|r| r.set_gpioaen(true));
+    pac::RCC.ahb1enr().modify(|r| r.set_gpioben(true));
+
+    // encoder mode tim5 motor1
+
+    // initialize gpio
     p.PA0
         .block()
         .moder()
@@ -151,8 +157,10 @@ async fn main(spawner: Spawner) {
     let tim5 = peripherals::TIM5::regs_gp32();
 
     tim5.psc().write(|w| w.set_psc(0));
-    tim5.arr().write(|w| w.set_arr(0xFF));
-    tim5.cnt().write(|w| w.set_cnt(128));
+    tim5.arr()
+        .write(|w| w.set_arr(ENCODER_TIM_MAX_VALUE as u32));
+    tim5.cnt()
+        .write(|w| w.set_cnt(ENCODER_TIM_HALF_VALUE as u32));
     tim5.ccmr_input(0)
         .modify(|w| w.set_ccs(0, CcmrInputCcs::from_bits(0b01)));
     tim5.ccmr_input(0)
@@ -163,6 +171,104 @@ async fn main(spawner: Spawner) {
     tim5.smcr().modify(|w| w.set_sms(Sms::ENCODER_MODE_3));
     tim5.cr1().modify(|r| r.set_cen(true));
 
+    // encoder mode tim3 motor2
+
+    // initialize gpio
+    p.PB4
+        .block()
+        .moder()
+        .modify(|r| r.set_moder(4, pac::gpio::vals::Moder::ALTERNATE));
+    p.PB4.block().afr(0).modify(|r| r.set_afr(4, 2));
+    p.PB5
+        .block()
+        .moder()
+        .modify(|r| r.set_moder(5, pac::gpio::vals::Moder::ALTERNATE));
+    p.PB5.block().afr(0).modify(|r| r.set_afr(5, 2));
+
+    // initialize tim
+    peripherals::TIM3::enable_and_reset();
+
+    let tim3 = peripherals::TIM3::regs_gp16();
+
+    tim3.psc().write(|w| w.set_psc(0));
+    tim3.arr().write(|w| w.set_arr(ENCODER_TIM_MAX_VALUE));
+    tim3.cnt().write(|w| w.set_cnt(ENCODER_TIM_HALF_VALUE));
+    tim3.ccmr_input(0)
+        .modify(|w| w.set_ccs(0, CcmrInputCcs::from_bits(0b01)));
+    tim3.ccmr_input(0)
+        .modify(|w| w.set_ccs(1, CcmrInputCcs::from_bits(0b01)));
+    tim3.ccer().modify(|w| {
+        w.0 &= !(0x1 << 1) | !(0x1 << 5);
+    });
+    tim3.smcr().modify(|w| w.set_sms(Sms::ENCODER_MODE_3));
+    tim3.cr1().modify(|r| r.set_cen(true));
+
+    // encoder mod tim4 motor3
+
+    // initialize gpio
+    p.PB6
+        .block()
+        .moder()
+        .modify(|r| r.set_moder(6, pac::gpio::vals::Moder::ALTERNATE));
+    p.PB6.block().afr(0).modify(|r| r.set_afr(6, 2));
+    p.PB7
+        .block()
+        .moder()
+        .modify(|r| r.set_moder(7, pac::gpio::vals::Moder::ALTERNATE));
+    p.PB7.block().afr(0).modify(|r| r.set_afr(7, 2));
+
+    // initialize tim
+    peripherals::TIM4::enable_and_reset();
+
+    let tim4 = peripherals::TIM4::regs_gp16();
+
+    tim4.psc().write(|w| w.set_psc(0));
+    tim4.arr().write(|w| w.set_arr(ENCODER_TIM_MAX_VALUE));
+    tim4.cnt().write(|w| w.set_cnt(ENCODER_TIM_HALF_VALUE));
+    tim4.ccmr_input(0)
+        .modify(|w| w.set_ccs(0, CcmrInputCcs::from_bits(0b01)));
+    tim4.ccmr_input(0)
+        .modify(|w| w.set_ccs(1, CcmrInputCcs::from_bits(0b01)));
+    tim4.ccer().modify(|w| {
+        w.0 &= !(0x1 << 1) | !(0x1 << 5);
+    });
+    tim4.smcr().modify(|w| w.set_sms(Sms::ENCODER_MODE_3));
+    tim4.cr1().modify(|r| r.set_cen(true));
+
+    // encoder mode tim2 motor4
+
+    // initialize gpio
+    p.PA15
+        .block()
+        .moder()
+        .modify(|r| r.set_moder(15, pac::gpio::vals::Moder::ALTERNATE));
+    p.PA15.block().afr(1).modify(|r| r.set_afr(7, 1));
+    p.PB9
+        .block()
+        .moder()
+        .modify(|r| r.set_moder(9, pac::gpio::vals::Moder::ALTERNATE));
+    p.PB9.block().afr(1).modify(|r| r.set_afr(1, 1));
+
+    // initialize tim
+    peripherals::TIM2::enable_and_reset();
+
+    let tim2 = peripherals::TIM2::regs_gp32();
+
+    tim2.psc().write(|w| w.set_psc(0));
+    tim2.arr()
+        .write(|w| w.set_arr(ENCODER_TIM_MAX_VALUE as u32));
+    tim2.cnt()
+        .write(|w| w.set_cnt(ENCODER_TIM_HALF_VALUE as u32));
+    tim2.ccmr_input(0)
+        .modify(|w| w.set_ccs(0, CcmrInputCcs::from_bits(0b01)));
+    tim2.ccmr_input(0)
+        .modify(|w| w.set_ccs(1, CcmrInputCcs::from_bits(0b01)));
+    tim2.ccer().modify(|w| {
+        w.0 &= !(0x1 << 1) | !(0x1 << 5);
+    });
+    tim2.smcr().modify(|w| w.set_sms(Sms::ENCODER_MODE_3));
+    tim2.cr1().modify(|r| r.set_cen(true));
+
     loop {
         let speed = 0;
         motors.set_speed1(speed);
@@ -172,7 +278,13 @@ async fn main(spawner: Spawner) {
 
         Timer::after_millis(10).await;
 
-        info!("{}", tim5.cnt().read().cnt());
+        info!(
+            "{}, {}, {}, {}",
+            tim5.cnt().read().cnt(),
+            tim3.cnt().read().cnt(),
+            tim4.cnt().read().cnt(),
+            tim2.cnt().read().cnt()
+        );
     }
 }
 

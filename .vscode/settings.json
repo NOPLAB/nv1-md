@@ -5,6 +5,7 @@
         "ccmr",
         "defmt",
         "gpioaen",
+        "gpioben",
         "Irqs",
         "moder",
         "regs",
