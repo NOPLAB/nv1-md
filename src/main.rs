@@ -1,6 +1,7 @@
 #![no_std]
 #![no_main]
 
+use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, mutex::Mutex};
 #[cfg(not(feature = "defmt"))]
 use panic_halt as _;
 
@@ -11,7 +12,7 @@ mod fmt;
 mod motor;
 mod music;
 
-use core::cell::RefCell;
+use core::{borrow::BorrowMut, cell::RefCell, ops::DerefMut};
 
 use motor::{MotorGroupComplementary, MotorGroupSimple, Motors};
 
@@ -19,8 +20,7 @@ use embassy_executor::Spawner;
 use embassy_stm32::{
     bind_interrupts,
     gpio::{low_level::Pin, OutputType},
-    pac::{self, timer::vals::Sms},
-    time::khz,
+    pac::{self, common::W, timer::vals::Sms},
     timer::{
         complementary_pwm::{ComplementaryPwm, ComplementaryPwmPin},
         simple_pwm::{PwmPin, SimplePwm},
@@ -34,11 +34,10 @@ use embassy_stm32::{
     usart::{self, Config},
 };
 use embassy_stm32::{
-    time::hz,
+    time::Hertz,
     timer::low_level::{GeneralPurpose16bitInstance, GeneralPurpose32bitInstance},
 };
-use embassy_sync::blocking_mutex::{raw::ThreadModeRawMutex, Mutex};
-use embassy_time::Timer;
+use embassy_time::{with_timeout, Duration, Timer};
 
 use fmt::info;
 
@@ -62,18 +61,17 @@ struct MotorSpeed {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-union MotorSpeedData {
+union MdData {
     motor_speed: MotorSpeed,
     buffer: [u8; 16],
 }
 
-static G_MOTOR_SPEED: Mutex<ThreadModeRawMutex, RefCell<MotorSpeed>> =
-    Mutex::new(RefCell::new(MotorSpeed {
-        motor1: 0.0,
-        motor2: 0.0,
-        motor3: 0.0,
-        motor4: 0.0,
-    }));
+static G_MOTOR_SPEED: Mutex<ThreadModeRawMutex, MotorSpeed> = Mutex::new(MotorSpeed {
+    motor1: 0.0,
+    motor2: 0.0,
+    motor3: 0.0,
+    motor4: 0.0,
+});
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
@@ -95,7 +93,7 @@ async fn main(spawner: Spawner) {
         Some(pwm1_ch3n),
         Some(pwm1_ch4),
         None,
-        khz(1),
+        Hertz(470),
         Default::default(),
     );
 
@@ -124,7 +122,7 @@ async fn main(spawner: Spawner) {
         Some(pwm8_ch2),
         Some(pwm8_ch3),
         Some(pwm8_ch4),
-        khz(1),
+        Hertz(470),
         Default::default(),
     );
 
@@ -332,13 +330,10 @@ async fn main(spawner: Spawner) {
     let mut next_music: u32 = music::MUSIC_DOREMI[0].1;
     let mut music_index: usize = 0;
 
-    loop {
-        let motor_target = G_MOTOR_SPEED.lock(|f| f.borrow().clone());
+    info!("MD initialized");
 
-        // pid1.setpoint(1.0);
-        // pid2.setpoint(1.0);
-        // pid3.setpoint(1.0);
-        // pid4.setpoint(1.0);
+    loop {
+        let motor_target = G_MOTOR_SPEED.lock().await.clone();
 
         if !motor_target.motor1.is_nan()
             && !motor_target.motor2.is_nan()
@@ -390,16 +385,16 @@ async fn main(spawner: Spawner) {
 
         Timer::after_millis(10).await;
 
-        play_time += 10;
-        if play_time > next_music {
-            play_time = 0;
-            music_index += 1;
-            if music_index >= music::MUSIC_DOREMI.len() {
-                music_index = 0;
-            }
-            next_music = music::MUSIC_DOREMI[music_index].1;
-            motors.set_frequency(music[music_index].0);
-        }
+        // play_time += 10;
+        // if play_time > next_music {
+        //     play_time = 0;
+        //     music_index += 1;
+        //     if music_index >= music::MUSIC_DOREMI.len() {
+        //         music_index = 0;
+        //     }
+        //     next_music = music::MUSIC_DOREMI[music_index].1;
+        //     motors.set_frequency(music[music_index].0);
+        // }
     }
 }
 
@@ -421,57 +416,77 @@ async fn uart_task(
     let mut buffer = [0; RECEIVE_DATA_SIZE];
 
     loop {
-        match usart.read(&mut buffer).await {
-            Ok(_) => {
-                let mut decoded_buf = [0; 32];
-                match corncobs::decode_buf(&buffer, &mut decoded_buf) {
-                    Ok(size) => {
-                        if size != DECODE_DATA_SIZE {
-                            info!("Invalid data size: {}", size);
-                            continue;
-                        }
+        let timeout_res = with_timeout(Duration::from_millis(100), usart.read(&mut buffer)).await;
+        match timeout_res {
+            Ok(read) => {
+                match read {
+                    Ok(_) => {
+                        let mut decoded_buf = [0; 32];
+                        match corncobs::decode_buf(&buffer, &mut decoded_buf) {
+                            Ok(size) => {
+                                if size != DECODE_DATA_SIZE {
+                                    info!("Invalid data size: {}", size);
+                                    continue;
+                                }
 
-                        let motor_speed_data = MotorSpeedData {
-                            buffer: decoded_buf[0..DECODE_DATA_SIZE].try_into().unwrap(),
-                        };
+                                let motor_speed_data = MdData {
+                                    buffer: decoded_buf[0..DECODE_DATA_SIZE].try_into().unwrap(),
+                                };
 
-                        // unsafe {
-                        //     info!("Motor speed: {}", motor_speed_data.motor_speed.motor1);
-                        // }
+                                // unsafe {
+                                //     info!("Motor speed: {}", motor_speed_data.motor_speed.motor1);
+                                // }
 
-                        G_MOTOR_SPEED.lock(|f| f.replace(unsafe { motor_speed_data.motor_speed }));
-                    }
-                    Err(err) => {
-                        info!("Failed to decode data");
-                        info!("Data: {:?}", buffer);
-                        match err {
-                            corncobs::CobsError::Truncated => info!("Truncated"),
-                            corncobs::CobsError::Corrupt => info!("Corrupt"),
-                        }
+                                let mut g_motor_speed = G_MOTOR_SPEED.lock().await;
+                                g_motor_speed.motor1 =
+                                    unsafe { motor_speed_data.motor_speed.motor1 };
+                                g_motor_speed.motor2 =
+                                    unsafe { motor_speed_data.motor_speed.motor2 };
+                                g_motor_speed.motor3 =
+                                    unsafe { motor_speed_data.motor_speed.motor3 };
+                                g_motor_speed.motor4 =
+                                    unsafe { motor_speed_data.motor_speed.motor4 };
+                            }
+                            Err(err) => {
+                                info!("Failed to decode data");
+                                info!("Data: {:?}", buffer);
+                                match err {
+                                    corncobs::CobsError::Truncated => info!("Truncated"),
+                                    corncobs::CobsError::Corrupt => info!("Corrupt"),
+                                }
 
-                        // read until 0
-                        let mut buffer = [0; 1];
-                        loop {
-                            usart.read(&mut buffer).await.unwrap();
-                            if buffer[0] == 0 {
-                                break;
+                                // read until 0
+                                let mut buffer = [0; 1];
+                                loop {
+                                    usart.read(&mut buffer).await.unwrap();
+                                    if buffer[0] == 0 {
+                                        break;
+                                    }
+                                }
                             }
                         }
                     }
-                }
+                    Err(err) => {
+                        if err == usart::Error::Overrun {
+                            info!("Overrun");
+                            continue;
+                        } else {
+                            info!("Failed to read data");
+                            info!("Error: {:?}", err);
+                            continue;
+                        }
+                    }
+                };
             }
-            Err(err) => {
-                if err == usart::Error::Overrun {
-                    info!("Overrun");
-                    continue;
-                } else {
-                    info!("Failed to read data");
-                    info!("Error: {:?}", err);
-                    continue;
-                }
+            Err(_) => {
+                info!("[UART] Timeout");
+                let mut g_motor_speed = G_MOTOR_SPEED.lock().await;
+                g_motor_speed.motor1 = 0.0;
+                g_motor_speed.motor2 = 0.0;
+                g_motor_speed.motor3 = 0.0;
+                g_motor_speed.motor4 = 0.0;
+                Timer::after_millis(100).await;
             }
-        };
-
-        // info!("Data: {:?}", stack);
+        }
     }
 }
