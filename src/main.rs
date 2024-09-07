@@ -1,7 +1,11 @@
 #![no_std]
 #![no_main]
 
+use core::{cell::RefCell, fmt::Debug};
+
+use defmt::error;
 use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, mutex::Mutex};
+use heapless::Vec;
 #[cfg(not(feature = "defmt"))]
 use panic_halt as _;
 
@@ -12,15 +16,13 @@ mod fmt;
 mod motor;
 mod music;
 
-use core::{borrow::BorrowMut, cell::RefCell, ops::DerefMut};
-
 use motor::{MotorGroupComplementary, MotorGroupSimple, Motors};
 
 use embassy_executor::Spawner;
 use embassy_stm32::{
     bind_interrupts,
     gpio::{low_level::Pin, OutputType},
-    pac::{self, common::W, timer::vals::Sms},
+    pac::{self, timer::vals::Sms},
     timer::{
         complementary_pwm::{ComplementaryPwm, ComplementaryPwmPin},
         simple_pwm::{PwmPin, SimplePwm},
@@ -50,28 +52,14 @@ bind_interrupts!(struct Irqs {
 const MOTOR_ENCODER_PLUS: usize = 3 * 4;
 const MOTOR_GEAR_RATIO: f32 = 1.0 / 19.225;
 
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-struct MotorSpeed {
-    motor1: f32,
-    motor2: f32,
-    motor3: f32,
-    motor4: f32,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-union MdData {
-    motor_speed: MotorSpeed,
-    buffer: [u8; 16],
-}
-
-static G_MOTOR_SPEED: Mutex<ThreadModeRawMutex, MotorSpeed> = Mutex::new(MotorSpeed {
-    motor1: 0.0,
-    motor2: 0.0,
-    motor3: 0.0,
-    motor4: 0.0,
-});
+static G_HUB_MSG: Mutex<ThreadModeRawMutex, RefCell<nv1_msg::md::HubMsgPackRx>> =
+    Mutex::new(RefCell::new(nv1_msg::md::HubMsgPackRx {
+        enable: false,
+        m1: 0.0,
+        m2: 0.0,
+        m3: 0.0,
+        m4: 0.0,
+    }));
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
@@ -333,37 +321,43 @@ async fn main(spawner: Spawner) {
     info!("MD initialized");
 
     loop {
-        let motor_target = G_MOTOR_SPEED.lock().await.clone();
+        let msg = G_HUB_MSG.lock().await.borrow().clone();
 
-        if !motor_target.motor1.is_nan()
-            && !motor_target.motor2.is_nan()
-            && !motor_target.motor3.is_nan()
-            && !motor_target.motor4.is_nan()
-        {
-            pid1.setpoint(motor_target.motor1);
-            pid2.setpoint(motor_target.motor2);
-            pid3.setpoint(motor_target.motor3);
-            pid4.setpoint(motor_target.motor4);
+        if msg.enable {
+            pid1.setpoint(msg.m1);
+            pid2.setpoint(msg.m2);
+            pid3.setpoint(msg.m3);
+            pid4.setpoint(msg.m4);
+
+            let motor1_rps = read_encoder1() / MOTOR_ENCODER_PLUS as f32 * MOTOR_GEAR_RATIO / 0.01;
+            let motor2_rps = read_encoder2() / MOTOR_ENCODER_PLUS as f32 * MOTOR_GEAR_RATIO / 0.01;
+            let motor3_rps = read_encoder3() / MOTOR_ENCODER_PLUS as f32 * MOTOR_GEAR_RATIO / 0.01;
+            let motor4_rps = read_encoder4() / MOTOR_ENCODER_PLUS as f32 * MOTOR_GEAR_RATIO / 0.01;
+
+            if motor1_rps.is_nan() {
+                continue;
+            }
+
+            let motor1_output = pid1.next_control_output(motor1_rps);
+            let motor2_output = pid2.next_control_output(motor2_rps);
+            let motor3_output = pid3.next_control_output(motor3_rps);
+            let motor4_output = pid4.next_control_output(motor4_rps);
+
+            motors.set_speed1(motor1_output.output as i16);
+            motors.set_speed2(motor2_output.output as i16);
+            motors.set_speed3(motor3_output.output as i16);
+            motors.set_speed4(motor4_output.output as i16);
+        } else {
+            pid1.setpoint(0.0);
+            pid2.setpoint(0.0);
+            pid3.setpoint(0.0);
+            pid4.setpoint(0.0);
+
+            motors.stop1();
+            motors.stop2();
+            motors.stop3();
+            motors.stop4();
         }
-
-        let motor1_rps = read_encoder1() / MOTOR_ENCODER_PLUS as f32 * MOTOR_GEAR_RATIO / 0.01;
-        let motor2_rps = read_encoder2() / MOTOR_ENCODER_PLUS as f32 * MOTOR_GEAR_RATIO / 0.01;
-        let motor3_rps = read_encoder3() / MOTOR_ENCODER_PLUS as f32 * MOTOR_GEAR_RATIO / 0.01;
-        let motor4_rps = read_encoder4() / MOTOR_ENCODER_PLUS as f32 * MOTOR_GEAR_RATIO / 0.01;
-
-        if motor1_rps.is_nan() {
-            continue;
-        }
-
-        let motor1_output = pid1.next_control_output(motor1_rps);
-        let motor2_output = pid2.next_control_output(motor2_rps);
-        let motor3_output = pid3.next_control_output(motor3_rps);
-        let motor4_output = pid4.next_control_output(motor4_rps);
-
-        motors.set_speed1(motor1_output.output as i16);
-        motors.set_speed2(motor2_output.output as i16);
-        motors.set_speed3(motor3_output.output as i16);
-        motors.set_speed4(motor4_output.output as i16);
 
         // info!(
         //     "rps: {}, {}, {}, {}",
@@ -402,90 +396,55 @@ async fn main(spawner: Spawner) {
 async fn uart_task(
     mut usart: Uart<'static, peripherals::USART3, peripherals::DMA1_CH3, peripherals::DMA1_CH1>,
 ) {
-    // read until 0
-    let mut buffer = [0; 1];
-    loop {
-        usart.read(&mut buffer).await.unwrap();
-        if buffer[0] == 0 {
-            break;
-        }
-    }
+    let initial_msg = nv1_msg::md::HubMsgPackRx {
+        enable: false,
+        m1: 0.0,
+        m2: 0.0,
+        m3: 0.0,
+        m4: 0.0,
+    };
+    let decoded = postcard::to_vec_cobs::<nv1_msg::md::HubMsgPackRx, 64>(&initial_msg).unwrap();
+    let receive_data_size = decoded.len();
 
-    const DECODE_DATA_SIZE: usize = 16;
-    const RECEIVE_DATA_SIZE: usize = DECODE_DATA_SIZE + 2;
-    let mut buffer = [0; RECEIVE_DATA_SIZE];
+    // let mut original_msg: Vec<u8, 64> = Vec::new();
+    // original_msg.resize(receive_data_size, 0).unwrap();
+    let mut original_msg = [0u8; 19];
 
+    let mut timeout_count = 0;
     loop {
-        let timeout_res = with_timeout(Duration::from_millis(100), usart.read(&mut buffer)).await;
+        let timeout_res =
+            with_timeout(Duration::from_millis(5), usart.read(&mut original_msg)).await;
         match timeout_res {
-            Ok(read) => {
-                match read {
-                    Ok(_) => {
-                        let mut decoded_buf = [0; 32];
-                        match corncobs::decode_buf(&buffer, &mut decoded_buf) {
-                            Ok(size) => {
-                                if size != DECODE_DATA_SIZE {
-                                    info!("Invalid data size: {}", size);
-                                    continue;
-                                }
-
-                                let motor_speed_data = MdData {
-                                    buffer: decoded_buf[0..DECODE_DATA_SIZE].try_into().unwrap(),
-                                };
-
-                                // unsafe {
-                                //     info!("Motor speed: {}", motor_speed_data.motor_speed.motor1);
-                                // }
-
-                                let mut g_motor_speed = G_MOTOR_SPEED.lock().await;
-                                g_motor_speed.motor1 =
-                                    unsafe { motor_speed_data.motor_speed.motor1 };
-                                g_motor_speed.motor2 =
-                                    unsafe { motor_speed_data.motor_speed.motor2 };
-                                g_motor_speed.motor3 =
-                                    unsafe { motor_speed_data.motor_speed.motor3 };
-                                g_motor_speed.motor4 =
-                                    unsafe { motor_speed_data.motor_speed.motor4 };
-                            }
-                            Err(err) => {
-                                info!("Failed to decode data");
-                                info!("Data: {:?}", buffer);
-                                match err {
-                                    corncobs::CobsError::Truncated => info!("Truncated"),
-                                    corncobs::CobsError::Corrupt => info!("Corrupt"),
-                                }
-
-                                // read until 0
-                                let mut buffer = [0; 1];
-                                loop {
-                                    usart.read(&mut buffer).await.unwrap();
-                                    if buffer[0] == 0 {
-                                        break;
-                                    }
-                                }
-                            }
+            Ok(rx) => match rx {
+                Ok(_) => {
+                    // info!("[UART] received data");
+                    match postcard::from_bytes_cobs::<nv1_msg::md::HubMsgPackRx>(&mut original_msg)
+                    {
+                        Ok(msg) => {
+                            info!("[UART] received msg: {:?}", msg.m1);
+                            G_HUB_MSG.lock().await.replace(msg);
                         }
-                    }
-                    Err(err) => {
-                        if err == usart::Error::Overrun {
-                            info!("Overrun");
-                            continue;
-                        } else {
-                            info!("Failed to read data");
-                            info!("Error: {:?}", err);
+                        Err(_) => {
+                            info!("[UART] postcard decode error");
                             continue;
                         }
-                    }
-                };
-            }
+                    };
+                    timeout_count = 0;
+                }
+                Err(err) => {
+                    error!("[UART] read error: {:?}", err);
+                    continue;
+                }
+            },
             Err(_) => {
-                info!("[UART] Timeout");
-                let mut g_motor_speed = G_MOTOR_SPEED.lock().await;
-                g_motor_speed.motor1 = 0.0;
-                g_motor_speed.motor2 = 0.0;
-                g_motor_speed.motor3 = 0.0;
-                g_motor_speed.motor4 = 0.0;
-                Timer::after_millis(100).await;
+                timeout_count += 1;
+
+                if timeout_count > 100 {
+                    error!("[UART] timeout");
+                    G_HUB_MSG.lock().await.get_mut().enable = false;
+                    timeout_count = 0;
+                }
+                continue;
             }
         }
     }

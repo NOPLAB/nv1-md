@@ -6,8 +6,9 @@ name = "nv1-md"
 version = "0.1.0"
 
 [dependencies]
+nv1-msg = { version = "0.1.3", git = "https://github.com/NOPLAB/nv1-msg" }
+
 corncobs = "0.1.3"
-# cobs = "0.2.3"
 cortex-m = { version = "0.7.7", features = [
     "inline-asm",
     "critical-section-single-core",
@@ -35,6 +36,7 @@ heapless = "0.8.0"
 panic-halt = "0.2.0"
 panic-probe = { version = "0.3.2", features = ["print-defmt"], optional = true }
 pid = "4.0.0"
+postcard = "1.0.10"
 
 [[bin]]
 name = "nv1-md"
