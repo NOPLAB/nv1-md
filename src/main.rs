@@ -318,15 +318,15 @@ async fn main(spawner: Spawner) {
         return tmp;
     };
 
-    let mut pid1: Pid<f32> = pid::Pid::new(10.0, 100.0);
+    let mut pid1: Pid<f32> = pid::Pid::new(0.0, 100.0);
     let mut pid2: Pid<f32> = pid::Pid::new(0.0, 100.0);
     let mut pid3: Pid<f32> = pid::Pid::new(0.0, 100.0);
     let mut pid4: Pid<f32> = pid::Pid::new(0.0, 100.0);
 
-    pid1.p(5.0, 100.0).i(3.0, 100.0).d(0.0, 0.0);
-    pid2.p(5.0, 100.0).i(3.0, 100.0).d(0.0, 0.0);
-    pid3.p(5.0, 100.0).i(3.0, 100.0).d(0.0, 0.0);
-    pid4.p(5.0, 100.0).i(3.0, 100.0).d(0.0, 0.0);
+    pid1.p(8.0, 50.0).i(4.0, 50.0).d(0.0, 0.0);
+    pid2.p(8.0, 50.0).i(4.0, 50.0).d(0.0, 0.0);
+    pid3.p(8.0, 50.0).i(4.0, 50.0).d(0.0, 0.0);
+    pid4.p(8.0, 50.0).i(4.0, 50.0).d(0.0, 0.0);
 
     // let midi = midly::parse(include_bytes!("../midi.mid")).unwrap();
 
@@ -341,10 +341,21 @@ async fn main(spawner: Spawner) {
             pid3.setpoint(msg.m3);
             pid4.setpoint(msg.m4);
 
+            // PID Tune
+            // pid1.setpoint(5.0);
+            // pid2.setpoint(5.0);
+            // pid3.setpoint(5.0);
+            // pid4.setpoint(5.0);
+
             let motor1_rps = read_encoder1() / MOTOR_ENCODER_PLUS as f32 * MOTOR_GEAR_RATIO / 0.01;
             let motor2_rps = read_encoder2() / MOTOR_ENCODER_PLUS as f32 * MOTOR_GEAR_RATIO / 0.01;
             let motor3_rps = read_encoder3() / MOTOR_ENCODER_PLUS as f32 * MOTOR_GEAR_RATIO / 0.01;
             let motor4_rps = read_encoder4() / MOTOR_ENCODER_PLUS as f32 * MOTOR_GEAR_RATIO / 0.01;
+
+            // info!(
+            //     "rps: {}, {}, {}, {}",
+            //     motor1_rps, motor2_rps, motor3_rps, motor4_rps
+            // );
 
             if motor1_rps.is_nan() {
                 continue;
@@ -370,11 +381,6 @@ async fn main(spawner: Spawner) {
             motors.stop3();
             motors.stop4();
         }
-
-        // info!(
-        //     "rps: {}, {}, {}, {}",
-        //     motor1_rps, motor2_rps, motor3_rps, motor4_rps
-        // );
 
         // info!(
         //     "output: {}, {}, {}",
