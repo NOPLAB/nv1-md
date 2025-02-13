@@ -2,13 +2,14 @@
 #![no_main]
 
 mod fmt;
-mod midi;
 mod motor;
 mod music;
 
 extern crate alloc;
 
+use alloc::vec::Vec;
 use embedded_alloc::LlffHeap as Heap;
+use midly::num::u7;
 
 #[global_allocator]
 static HEAP: Heap = Heap::empty();
@@ -23,7 +24,7 @@ use panic_halt as _;
 #[cfg(feature = "defmt")]
 use {defmt_rtt as _, panic_probe as _};
 
-use motor::{MotorGroupComplementary, MotorGroupSimple, Motors};
+use motor::{MotorGroup, MotorGroupComplementary, MotorGroupSimple, Motors};
 
 use embassy_executor::Spawner;
 use embassy_stm32::{
@@ -152,7 +153,7 @@ async fn main(spawner: Spawner) {
     )
     .unwrap();
 
-    spawner.must_spawn(uart_task(usart));
+    // spawner.must_spawn(uart_task(usart));
 
     const ENCODER_TIM_MAX_VALUE: u16 = 0xFF;
     const ENCODER_TIM_HALF_VALUE: u16 = ENCODER_TIM_MAX_VALUE / 2;
@@ -328,10 +329,7 @@ async fn main(spawner: Spawner) {
     pid3.p(5.0, 100.0).i(3.0, 100.0).d(0.0, 0.0);
     pid4.p(5.0, 100.0).i(3.0, 100.0).d(0.0, 0.0);
 
-    let music = music::MUSIC_DOREMI;
-    let mut play_time: u32 = 0;
-    let mut next_music: u32 = music::MUSIC_DOREMI[0].1;
-    let mut music_index: usize = 0;
+    let midi = midly::parse(include_bytes!("../midi.mid")).unwrap();
 
     info!("MD initialized");
 
@@ -394,16 +392,65 @@ async fn main(spawner: Spawner) {
 
         Timer::after_millis(10).await;
 
-        // play_time += 10;
-        // if play_time > next_music {
-        //     play_time = 0;
-        //     music_index += 1;
-        //     if music_index >= music::MUSIC_DOREMI.len() {
-        //         music_index = 0;
-        //     }
-        //     next_music = music::MUSIC_DOREMI[music_index].1;
-        //     motors.set_frequency(music[music_index].0);
-        // }
+        // MIDI
+        motors.set_speed1(10);
+        motors.set_speed2(10);
+        motors.set_speed3(10);
+        motors.set_speed4(10);
+
+        let mut running_notes: Vec<(u7, u7)> = Vec::new();
+
+        for (i, track) in midi.clone().1.enumerate() {
+            if i != 1 {
+                continue;
+            }
+
+            let track = track.unwrap();
+            for event in track {
+                let event = event.unwrap();
+
+                match event.kind {
+                    midly::TrackEventKind::Midi { channel, message } => {
+                        if channel == 0 {
+                            match message {
+                                midly::MidiMessage::NoteOn { key, vel } => {
+                                    running_notes.push((key, vel));
+                                }
+                                midly::MidiMessage::NoteOff { key, vel: _ } => {
+                                    running_notes.retain(|&x| x.0 != key.as_int());
+                                }
+                                _ => (),
+                            }
+
+                            let max_note = running_notes.iter().max_by_key(|x| x.0.as_int());
+                            let second_max_note = running_notes
+                                .iter()
+                                .filter(|x| x.0 != max_note.unwrap().0)
+                                .max_by_key(|x| x.0.as_int());
+                            if let Some(note) = max_note {
+                                let key = note.0.as_int() as f32;
+                                let hz = 440.0 * libm::powf(2.0_f32, (key - 69.0) / 12.0);
+
+                                motors.group1.set_frequency(Hertz(hz as u32));
+                            }
+                            if let Some(note) = second_max_note {
+                                let key = note.0.as_int() as f32;
+                                let hz = 440.0 * libm::powf(2.0_f32, (key - 69.0) / 12.0);
+
+                                motors.group2.set_frequency(Hertz(hz as u32));
+                            }
+                        }
+                    }
+                    _ => (),
+                }
+
+                if event.delta.as_int() == 0 {
+                    continue;
+                } else {
+                    Timer::after_millis(event.delta.as_int() as u64).await;
+                }
+            }
+        }
     }
 }
 
@@ -436,7 +483,7 @@ async fn uart_task(
                     match postcard::from_bytes_cobs::<nv1_msg::md::HubMsgPackRx>(&mut original_msg)
                     {
                         Ok(msg) => {
-                            info!("[UART] received msg: {:?}", msg.m1);
+                            // info!("[UART] received msg: {:?}", msg.m1);
                             G_HUB_MSG.lock().await.replace(msg);
                         }
                         Err(_) => {

@@ -38,6 +38,8 @@ panic-probe = { version = "0.3.2", features = ["print-defmt"], optional = true }
 pid = "4.0.0"
 postcard = "1.0.10"
 embedded-alloc = "0.6.0"
+libm = "0.2.11"
+midly = { version = "0.5.3", default-features = false }
 
 [[bin]]
 name = "nv1-md"

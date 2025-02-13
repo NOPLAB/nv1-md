@@ -188,8 +188,8 @@ where
     G1: MotorGroup,
     G2: MotorGroup,
 {
-    group1: G1,
-    group2: G2,
+    pub group1: G1,
+    pub group2: G2,
 }
 
 impl<G1, G2> Motors<G1, G2>
