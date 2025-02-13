@@ -1,20 +1,27 @@
 #![no_std]
 #![no_main]
 
-use core::{cell::RefCell, fmt::Debug};
+mod fmt;
+mod midi;
+mod motor;
+mod music;
+
+extern crate alloc;
+
+use embedded_alloc::LlffHeap as Heap;
+
+#[global_allocator]
+static HEAP: Heap = Heap::empty();
+
+use core::cell::RefCell;
 
 use defmt::error;
 use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, mutex::Mutex};
-use heapless::Vec;
 #[cfg(not(feature = "defmt"))]
 use panic_halt as _;
 
 #[cfg(feature = "defmt")]
 use {defmt_rtt as _, panic_probe as _};
-
-mod fmt;
-mod motor;
-mod music;
 
 use motor::{MotorGroupComplementary, MotorGroupSimple, Motors};
 
@@ -63,6 +70,14 @@ static G_HUB_MSG: Mutex<ThreadModeRawMutex, RefCell<nv1_msg::md::HubMsgPackRx>> 
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
+    // initialize static heap
+    {
+        use core::mem::MaybeUninit;
+        const HEAP_SIZE: usize = 1024;
+        static mut HEAP_MEM: [MaybeUninit<u8>; HEAP_SIZE] = [MaybeUninit::uninit(); HEAP_SIZE];
+        unsafe { HEAP.init(HEAP_MEM.as_ptr() as usize, HEAP_SIZE) }
+    }
+
     let p = embassy_stm32::init(Default::default());
 
     let pwm1_ch1 = PwmPin::new_ch1(p.PA8, OutputType::PushPull);
