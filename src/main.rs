@@ -3,7 +3,6 @@
 
 mod fmt;
 mod motor;
-mod music;
 
 extern crate alloc;
 
@@ -153,7 +152,7 @@ async fn main(spawner: Spawner) {
     )
     .unwrap();
 
-    // spawner.must_spawn(uart_task(usart));
+    spawner.must_spawn(uart_task(usart));
 
     const ENCODER_TIM_MAX_VALUE: u16 = 0xFF;
     const ENCODER_TIM_HALF_VALUE: u16 = ENCODER_TIM_MAX_VALUE / 2;
@@ -329,7 +328,7 @@ async fn main(spawner: Spawner) {
     pid3.p(5.0, 100.0).i(3.0, 100.0).d(0.0, 0.0);
     pid4.p(5.0, 100.0).i(3.0, 100.0).d(0.0, 0.0);
 
-    let midi = midly::parse(include_bytes!("../midi.mid")).unwrap();
+    // let midi = midly::parse(include_bytes!("../midi.mid")).unwrap();
 
     info!("MD initialized");
 
@@ -393,64 +392,64 @@ async fn main(spawner: Spawner) {
         Timer::after_millis(10).await;
 
         // MIDI
-        motors.set_speed1(10);
-        motors.set_speed2(10);
-        motors.set_speed3(10);
-        motors.set_speed4(10);
+        // motors.set_speed1(10);
+        // motors.set_speed2(10);
+        // motors.set_speed3(10);
+        // motors.set_speed4(10);
 
-        let mut running_notes: Vec<(u7, u7)> = Vec::new();
+        // let mut running_notes: Vec<(u7, u7)> = Vec::new();
 
-        for (i, track) in midi.clone().1.enumerate() {
-            if i != 1 {
-                continue;
-            }
+        // for (i, track) in midi.clone().1.enumerate() {
+        //     if i != 1 {
+        //         continue;
+        //     }
 
-            let track = track.unwrap();
-            for event in track {
-                let event = event.unwrap();
+        //     let track = track.unwrap();
+        //     for event in track {
+        //         let event = event.unwrap();
 
-                match event.kind {
-                    midly::TrackEventKind::Midi { channel, message } => {
-                        if channel == 0 {
-                            match message {
-                                midly::MidiMessage::NoteOn { key, vel } => {
-                                    running_notes.push((key, vel));
-                                }
-                                midly::MidiMessage::NoteOff { key, vel: _ } => {
-                                    running_notes.retain(|&x| x.0 != key.as_int());
-                                }
-                                _ => (),
-                            }
+        //         match event.kind {
+        //             midly::TrackEventKind::Midi { channel, message } => {
+        //                 if channel == 0 {
+        //                     match message {
+        //                         midly::MidiMessage::NoteOn { key, vel } => {
+        //                             running_notes.push((key, vel));
+        //                         }
+        //                         midly::MidiMessage::NoteOff { key, vel: _ } => {
+        //                             running_notes.retain(|&x| x.0 != key.as_int());
+        //                         }
+        //                         _ => (),
+        //                     }
 
-                            let max_note = running_notes.iter().max_by_key(|x| x.0.as_int());
-                            let second_max_note = running_notes
-                                .iter()
-                                .filter(|x| x.0 != max_note.unwrap().0)
-                                .max_by_key(|x| x.0.as_int());
-                            if let Some(note) = max_note {
-                                let key = note.0.as_int() as f32;
-                                let hz = 440.0 * libm::powf(2.0_f32, (key - 69.0) / 12.0);
+        //                     let max_note = running_notes.iter().max_by_key(|x| x.0.as_int());
+        //                     let second_max_note = running_notes
+        //                         .iter()
+        //                         .filter(|x| x.0 != max_note.unwrap().0)
+        //                         .max_by_key(|x| x.0.as_int());
+        //                     if let Some(note) = max_note {
+        //                         let key = note.0.as_int() as f32;
+        //                         let hz = 440.0 * libm::powf(2.0_f32, (key - 69.0) / 12.0);
 
-                                motors.group1.set_frequency(Hertz(hz as u32));
-                            }
-                            if let Some(note) = second_max_note {
-                                let key = note.0.as_int() as f32;
-                                let hz = 440.0 * libm::powf(2.0_f32, (key - 69.0) / 12.0);
+        //                         motors.group1.set_frequency(Hertz(hz as u32));
+        //                     }
+        //                     if let Some(note) = second_max_note {
+        //                         let key = note.0.as_int() as f32;
+        //                         let hz = 440.0 * libm::powf(2.0_f32, (key - 69.0) / 12.0);
 
-                                motors.group2.set_frequency(Hertz(hz as u32));
-                            }
-                        }
-                    }
-                    _ => (),
-                }
+        //                         motors.group2.set_frequency(Hertz(hz as u32));
+        //                     }
+        //                 }
+        //             }
+        //             _ => (),
+        //         }
 
-                if event.delta.as_int() == 0 {
-                    continue;
-                } else {
-                    Timer::after_millis(event.delta.as_int() as u64).await;
-                }
-            }
-        }
+        //         if event.delta.as_int() == 0 {
+        //             continue;
+        //         } else {
+        //             Timer::after_millis(event.delta.as_int() as u64).await;
+        //         }
+        //     }
+        // }
     }
 }
 
