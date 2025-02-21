@@ -23,13 +23,13 @@ use panic_halt as _;
 #[cfg(feature = "defmt")]
 use {defmt_rtt as _, panic_probe as _};
 
-use motor::{MotorGroup, MotorGroupComplementary, MotorGroupSimple, Motors};
+use motor::{MotorGroupComplementary, MotorGroupSimple, Motors};
 
 use embassy_executor::Spawner;
 use embassy_stm32::{
     bind_interrupts,
     gpio::{low_level::Pin, OutputType},
-    pac::{self, timer::vals::Sms},
+    pac::{self, common::W, timer::vals::Sms},
     timer::{
         complementary_pwm::{ComplementaryPwm, ComplementaryPwmPin},
         simple_pwm::{PwmPin, SimplePwm},
@@ -59,8 +59,8 @@ bind_interrupts!(struct Irqs {
 const MOTOR_ENCODER_PLUS: usize = 3 * 4;
 const MOTOR_GEAR_RATIO: f32 = 1.0 / 19.225;
 
-static G_HUB_MSG: Mutex<ThreadModeRawMutex, RefCell<nv1_msg::md::HubMsgPackRx>> =
-    Mutex::new(RefCell::new(nv1_msg::md::HubMsgPackRx {
+static G_HUB_MSG: Mutex<ThreadModeRawMutex, RefCell<nv1_msg::md::ToMD>> =
+    Mutex::new(RefCell::new(nv1_msg::md::ToMD {
         enable: false,
         m1: 0.0,
         m2: 0.0,
@@ -78,7 +78,31 @@ async fn main(spawner: Spawner) {
         unsafe { HEAP.init(HEAP_MEM.as_ptr() as usize, HEAP_SIZE) }
     }
 
-    let p = embassy_stm32::init(Default::default());
+    let mut config = embassy_stm32::Config::default();
+    {
+        use embassy_stm32::rcc;
+
+        config.rcc.hse = Some(rcc::Hse {
+            freq: Hertz(20_000_000),
+            mode: rcc::HseMode::Oscillator,
+        });
+
+        config.rcc.pll_src = rcc::PllSource::HSE;
+        config.rcc.pll = Some(rcc::Pll {
+            prediv: rcc::PllPreDiv::DIV16,
+            mul: rcc::PllMul::MUL288,
+            divp: Some(rcc::PllPDiv::DIV2),
+            divq: None,
+            divr: Some(rcc::PllRDiv::DIV2),
+        });
+
+        config.rcc.sys = rcc::Sysclk::PLL1_P;
+
+        config.rcc.apb1_pre = rcc::APBPrescaler::DIV4;
+        config.rcc.apb2_pre = rcc::APBPrescaler::DIV2;
+    }
+
+    let p = embassy_stm32::init(config);
 
     let pwm1_ch1 = PwmPin::new_ch1(p.PA8, OutputType::PushPull);
     let pwm1_ch4 = PwmPin::new_ch4(p.PA11, OutputType::PushPull);
@@ -461,58 +485,65 @@ async fn main(spawner: Spawner) {
 
 #[embassy_executor::task]
 async fn uart_task(
-    mut usart: Uart<'static, peripherals::USART3, peripherals::DMA1_CH3, peripherals::DMA1_CH1>,
+    usart: Uart<'static, peripherals::USART3, peripherals::DMA1_CH3, peripherals::DMA1_CH1>,
 ) {
-    let initial_msg = nv1_msg::md::HubMsgPackRx {
-        enable: false,
-        m1: 0.0,
-        m2: 0.0,
-        m3: 0.0,
-        m4: 0.0,
-    };
-    let decoded = postcard::to_vec_cobs::<nv1_msg::md::HubMsgPackRx, 64>(&initial_msg).unwrap();
-    let receive_data_size = decoded.len();
+    let (_, uart_rx) = usart.split();
 
-    // let mut original_msg: Vec<u8, 64> = Vec::new();
-    // original_msg.resize(receive_data_size, 0).unwrap();
-    let mut original_msg = [0u8; 19];
+    let mut dma_buf = [0u8; 128];
+    let mut uart_rx = uart_rx.into_ring_buffered(&mut dma_buf);
 
-    let mut timeout_count = 0;
+    let _ = uart_rx.start();
+
     loop {
-        let timeout_res =
-            with_timeout(Duration::from_millis(5), usart.read(&mut original_msg)).await;
-        match timeout_res {
-            Ok(rx) => match rx {
-                Ok(_) => {
-                    // info!("[UART] received data");
-                    match postcard::from_bytes_cobs::<nv1_msg::md::HubMsgPackRx>(&mut original_msg)
-                    {
-                        Ok(msg) => {
-                            // info!("[UART] received msg: {:?}", msg.m1);
-                            G_HUB_MSG.lock().await.replace(msg);
-                        }
-                        Err(_) => {
-                            info!("[UART] postcard decode error");
-                            continue;
-                        }
-                    };
-                    timeout_count = 0;
-                }
-                Err(err) => {
-                    error!("[UART] read error: {:?}", err);
-                    continue;
-                }
-            },
-            Err(_) => {
-                timeout_count += 1;
+        let mut byte = [0u8; 1];
+        let mut msg_with_cobs = [0u8; 64];
+        let mut c = 0;
+        loop {
+            let timeout_res =
+                with_timeout(Duration::from_millis(50), uart_rx.read(&mut byte)).await;
+            match timeout_res {
+                Ok(receive_res) => match receive_res {
+                    Ok(_size) => {
+                        msg_with_cobs[c] = byte[0];
+                        c += 1;
 
-                if timeout_count > 100 {
+                        if byte[0] == 0 {
+                            break;
+                        }
+                    }
+                    Err(_err) => {
+                        // error!("[UART] read error: {:?}", err);
+
+                        let _ = uart_rx.start();
+                    }
+                },
+                Err(_) => {
                     error!("[UART] timeout");
-                    G_HUB_MSG.lock().await.get_mut().enable = false;
-                    timeout_count = 0;
+
+                    G_HUB_MSG.lock().await.replace(nv1_msg::md::ToMD {
+                        enable: false,
+                        m1: 0.0,
+                        m2: 0.0,
+                        m3: 0.0,
+                        m4: 0.0,
+                    });
+
+                    break;
                 }
-                continue;
             }
         }
+
+        match postcard::from_bytes_cobs::<nv1_msg::md::ToMD>(&mut msg_with_cobs) {
+            Ok(msg) => {
+                // info!("[UART] received msg: {:?}", msg.m1);
+                G_HUB_MSG.lock().await.replace(msg);
+            }
+            Err(_) => {
+                // info!("[UART] postcard decode error");
+                continue;
+            }
+        };
+
+        Timer::after_millis(5).await;
     }
 }
