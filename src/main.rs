@@ -170,7 +170,7 @@ async fn main(spawner: Spawner) {
     let mut motors = Motors::new(motor_group1, motor_group2);
 
     let mut config = Config::default();
-    config.baudrate = 115200;
+    config.baudrate = 2_000_000;
     let usart = Uart::new(
         p.USART3, p.PC5, p.PB10, Irqs, p.DMA1_CH3, p.DMA1_CH1, config,
     )
@@ -354,7 +354,7 @@ async fn main(spawner: Spawner) {
 
     // let midi = midly::parse(include_bytes!("../midi.mid")).unwrap();
 
-    info!("MD initialized");
+    info!("[MD] initialized");
 
     loop {
         let msg = G_HUB_MSG.lock().await.borrow().clone();
@@ -512,7 +512,7 @@ async fn uart_task(
                         }
                     }
                     Err(_err) => {
-                        // error!("[UART] read error: {:?}", err);
+                        // error!("[UART] read error: {:?}, {}", err, c);
 
                         let _ = uart_rx.start();
                     }
