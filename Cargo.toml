@@ -34,7 +34,7 @@ embassy-sync = "0.6.0"
 embassy-time = { version = "0.3.2", features = ["tick-hz-32_768"] }
 heapless = "0.8.0"
 panic-halt = "1.0.0"
-panic-probe = { version = "0.3.2", features = ["print-defmt"], optional = true }
+panic-probe = { version = "1.0.0", features = ["print-defmt"], optional = true }
 pid = "4.0.0"
 postcard = "1.0.10"
 embedded-alloc = "0.6.0"
